@@ -212,8 +212,16 @@ Specify the model to use for commit messages and chat history summarization (def
 Environment variable: `AIDER_WEAK_MODEL`  
 
 ### `--editor-model EDITOR_MODEL`
-Specify the model to use for editor tasks (default depends on --model)  
-Environment variable: `AIDER_EDITOR_MODEL`  
+Specify the model to use for editor tasks (default depends on --model)
+Environment variable: `AIDER_EDITOR_MODEL`
+
+### `--apply-model-tag TAG`
+Specify a tag for the local code apply model `osmosis/osmosis-apply-1.7B`
+Environment variable: `AIDER_APPLY_MODEL_TAG`
+
+### `--apply-prompt PROMPT`
+Custom system prompt for the code apply model
+Environment variable: `AIDER_APPLY_PROMPT`
 
 ### `--editor-edit-format EDITOR_EDIT_FORMAT`
 Specify the edit format for the editor model (default: depends on editor model)  

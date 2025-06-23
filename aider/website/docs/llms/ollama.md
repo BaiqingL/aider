@@ -33,6 +33,21 @@ cd /to/your/project
 aider --model ollama_chat/<model>
 ```
 
+### Local code apply model
+
+You can run a local model to handle applying edits. Start ollama and specify a tag:
+
+```
+ollama pull osmosis/osmosis-apply-1.7B
+OLLAMA_CONTEXT_LENGTH=8192 ollama serve
+
+aider --apply-model-tag <tag>
+```
+
+This uses `ollama_chat/osmosis/osmosis-apply-1.7B:<tag>` as the editor model.
+
+You can customize the instructions sent to this model with `--apply-prompt "YOUR PROMPT"`.
+
 {: .note }
 Using `ollama_chat/` is recommended over `ollama/`.
 

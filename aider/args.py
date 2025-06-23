@@ -9,11 +9,8 @@ import configargparse
 import shtab
 
 from aider import __version__
-from aider.args_formatter import (
-    DotEnvFormatter,
-    MarkdownHelpFormatter,
-    YamlHelpFormatter,
-)
+from aider.args_formatter import (DotEnvFormatter, MarkdownHelpFormatter,
+                                  YamlHelpFormatter)
 from aider.deprecated import add_deprecated_model_args
 
 from .dump import dump  # noqa: F401
@@ -197,6 +194,18 @@ def get_parser(default_config_files, git_root):
         help="Specify the model to use for editor tasks (default depends on --model)",
     )
     group.add_argument(
+        "--apply-model-tag",
+        metavar="TAG",
+        default=None,
+        help="Specify a tag for the local code apply model osmosis/osmosis-apply-1.7B",
+    )
+    group.add_argument(
+        "--apply-prompt",
+        metavar="PROMPT",
+        default=None,
+        help="Custom system prompt for the code apply model",
+    )
+    group.add_argument(
         "--editor-edit-format",
         metavar="EDITOR_EDIT_FORMAT",
         choices=edit_format_choices,
@@ -269,10 +278,14 @@ def get_parser(default_config_files, git_root):
     ##########
     group = parser.add_argument_group("History Files")
     default_input_history_file = (
-        os.path.join(git_root, ".aider.input.history") if git_root else ".aider.input.history"
+        os.path.join(git_root, ".aider.input.history")
+        if git_root
+        else ".aider.input.history"
     )
     default_chat_history_file = (
-        os.path.join(git_root, ".aider.chat.history.md") if git_root else ".aider.chat.history.md"
+        os.path.join(git_root, ".aider.chat.history.md")
+        if git_root
+        else ".aider.chat.history.md"
     )
     group.add_argument(
         "--input-history-file",
@@ -915,15 +928,23 @@ def main():
             shell = sys.argv[2]
             if shell not in shtab.SUPPORTED_SHELLS:
                 print(f"Error: Unsupported shell '{shell}'.", file=sys.stderr)
-                print(f"Supported shells are: {', '.join(shtab.SUPPORTED_SHELLS)}", file=sys.stderr)
+                print(
+                    f"Supported shells are: {', '.join(shtab.SUPPORTED_SHELLS)}",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
             parser = get_parser([], None)
             parser.prog = "aider"  # Set the program name on the parser
             print(shtab.complete(parser, shell=shell))
         else:
             print("Error: Please specify a shell for completion.", file=sys.stderr)
-            print(f"Usage: python {sys.argv[0]} completion <shell_name>", file=sys.stderr)
-            print(f"Supported shells are: {', '.join(shtab.SUPPORTED_SHELLS)}", file=sys.stderr)
+            print(
+                f"Usage: python {sys.argv[0]} completion <shell_name>", file=sys.stderr
+            )
+            print(
+                f"Supported shells are: {', '.join(shtab.SUPPORTED_SHELLS)}",
+                file=sys.stderr,
+            )
             sys.exit(1)
     else:
         # Default to YAML for any other unrecognized argument, or if 'yaml' was explicitly passed

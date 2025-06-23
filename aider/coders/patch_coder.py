@@ -3,8 +3,35 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
+from aider.llm import litellm
+
 from .base_coder import Coder
 from .patch_prompts import PatchPrompts
+
+# Default prompt for local apply model
+DEFAULT_APPLY_PROMPT = """Use this tool to propose an edit to an existing file.
+
+This will be read by a less intelligent model, which will quickly apply the edit. You should make it clear what the edit is, while also minimizing the unchanged code you write.
+
+When writing the edit, you should specify each edit in sequence, with the special comment // ... existing code ... to represent unchanged code in between edited lines.
+
+For example:
+
+// ... existing code ...
+FIRST_EDIT
+// ... existing code ...
+SECOND_EDIT
+// ... existing code ...
+THIRD_EDIT
+// ... existing code ...
+
+This will be read by a less intelligent model, which will quickly apply the edit. You should make it clear what the edit is, while also minimizing the unchanged code you write.
+When writing the edit, you should specify each edit in sequence, with the special comment // ... existing code ... to represent unchanged code in between edited lines.
+
+You should bias towards repeating as few lines of the original file as possible to convey the change.
+NEVER show unmodified code in the edit, unless sufficient context of unchanged lines around the code you're editing is needed to resolve ambiguity.
+If you plan on deleting a section, you must provide surrounding context to indicate the deletion.
+DO NOT omit spans of pre-existing code without using the // ... existing code ... comment to indicate its absence."""
 
 
 # --------------------------------------------------------------------------- #
@@ -22,7 +49,9 @@ class ActionType(str, Enum):
 
 @dataclass
 class Chunk:
-    orig_index: int = -1  # Line number in the *original* file block where the change starts
+    orig_index: int = (
+        -1
+    )  # Line number in the *original* file block where the change starts
     del_lines: List[str] = field(default_factory=list)
     ins_lines: List[str] = field(default_factory=list)
 
@@ -56,7 +85,9 @@ def _norm(line: str) -> str:
     return line.rstrip("\r")
 
 
-def find_context_core(lines: List[str], context: List[str], start: int) -> Tuple[int, int]:
+def find_context_core(
+    lines: List[str], context: List[str], start: int
+) -> Tuple[int, int]:
     """Finds context block, returns start index and fuzz level."""
     if not context:
         return start, 0
@@ -78,12 +109,16 @@ def find_context_core(lines: List[str], context: List[str], start: int) -> Tuple
     return -1, 0
 
 
-def find_context(lines: List[str], context: List[str], start: int, eof: bool) -> Tuple[int, int]:
+def find_context(
+    lines: List[str], context: List[str], start: int, eof: bool
+) -> Tuple[int, int]:
     """Finds context, handling EOF marker."""
     if eof:
         # If EOF marker, first try matching at the very end
         if len(lines) >= len(context):
-            new_index, fuzz = find_context_core(lines, context, len(lines) - len(context))
+            new_index, fuzz = find_context_core(
+                lines, context, len(lines) - len(context)
+            )
             if new_index != -1:
                 return new_index, fuzz
         # If not found at end, search from `start` as fallback
@@ -93,7 +128,9 @@ def find_context(lines: List[str], context: List[str], start: int, eof: bool) ->
     return find_context_core(lines, context, start)
 
 
-def peek_next_section(lines: List[str], index: int) -> Tuple[List[str], List[Chunk], int, bool]:
+def peek_next_section(
+    lines: List[str], index: int
+) -> Tuple[List[str], List[Chunk], int, bool]:
     """
     Parses one section (context, -, + lines) of an Update block.
     Returns: (context_lines, chunks_in_section, next_index, is_eof)
@@ -163,7 +200,9 @@ def peek_next_section(lines: List[str], index: int) -> Tuple[List[str], List[Chu
         # Collect lines based on mode
         if mode == "delete":
             del_lines.append(line_content)
-            context_lines.append(line_content)  # Deleted lines are part of the original context
+            context_lines.append(
+                line_content
+            )  # Deleted lines are part of the original context
         elif mode == "add":
             ins_lines.append(line_content)
         elif mode == "keep":
@@ -216,6 +255,48 @@ class PatchCoder(Coder):
 
     edit_format = "patch"
     gpt_prompts = PatchPrompts()
+
+    def _format_patch_action(self, action: PatchAction) -> str:
+        lines = ["*** Begin Patch"]
+        if action.type == ActionType.ADD:
+            lines.append(f"*** Add File: {action.path}")
+            for l in action.new_content.splitlines():
+                lines.append("+" + l)
+        elif action.type == ActionType.DELETE:
+            lines.append(f"*** Delete File: {action.path}")
+        elif action.type == ActionType.UPDATE:
+            lines.append(f"*** Update File: {action.path}")
+            if action.move_path:
+                lines.append(f"*** Move to: {action.move_path}")
+            for chunk in action.chunks:
+                lines.append("@@")
+                for dl in chunk.del_lines:
+                    lines.append("-" + dl)
+                for il in chunk.ins_lines:
+                    lines.append("+" + il)
+        lines.append("*** End Patch")
+        return "\n".join(lines)
+
+    def _llm_apply_patch(
+        self, path: str, patch_text: str, current_content: str
+    ) -> Optional[str]:
+        system = self.apply_prompt or DEFAULT_APPLY_PROMPT
+        user = (
+            f"target_file: {path}\npatch:\n{patch_text}\n\ncurrent:\n{current_content}"
+        )
+        try:
+            resp = litellm.completion(
+                model=self.main_model.editor_model.name,
+                messages=[
+                    dict(role="system", content=system),
+                    dict(role="user", content=user),
+                ],
+                stream=False,
+            )
+            return resp.choices[0].message.content
+        except Exception as err:
+            self.io.tool_warning(f"Apply model error: {err}")
+            return None
 
     def get_edits(self) -> List[EditResult]:
         """
@@ -315,14 +396,18 @@ class PatchCoder(Coder):
 
                 # Optional move target
                 move_to = None
-                if index < len(lines) and _norm(lines[index]).startswith("*** Move to: "):
+                if index < len(lines) and _norm(lines[index]).startswith(
+                    "*** Move to: "
+                ):
                     move_to = _norm(lines[index])[len("*** Move to: ") :].strip()
                     index += 1
                     if not move_to:
                         raise DiffError("Move to action missing path.")
 
                 if path not in current_files:
-                    raise DiffError(f"Update File Error - missing file content for: {path}")
+                    raise DiffError(
+                        f"Update File Error - missing file content for: {path}"
+                    )
 
                 file_content = current_files[path]
 
@@ -338,8 +423,13 @@ class PatchCoder(Coder):
                     existing_action.chunks.extend(new_action.chunks)
 
                     if move_to:
-                        if existing_action.move_path and existing_action.move_path != move_to:
-                            raise DiffError(f"Conflicting move targets for file: {path}")
+                        if (
+                            existing_action.move_path
+                            and existing_action.move_path != move_to
+                        ):
+                            raise DiffError(
+                                f"Conflicting move targets for file: {path}"
+                            )
                         existing_action.move_path = move_to
                     fuzz_accumulator += fuzz
                 else:
@@ -363,7 +453,9 @@ class PatchCoder(Coder):
                 if existing_action:
                     if existing_action.type == ActionType.DELETE:
                         # Duplicate delete – ignore the extra block
-                        self.io.tool_warning(f"Duplicate delete action for file: {path} ignored.")
+                        self.io.tool_warning(
+                            f"Duplicate delete action for file: {path} ignored."
+                        )
                         continue
                     else:
                         raise DiffError(f"Conflicting actions for file: {path}")
@@ -469,7 +561,8 @@ class PatchCoder(Coder):
                         for i, scope in enumerate(scope_lines):
                             if (
                                 temp_index + i >= len(orig_lines)
-                                or _norm(orig_lines[temp_index + i]).strip() != scope.strip()
+                                or _norm(orig_lines[temp_index + i]).strip()
+                                != scope.strip()
                             ):
                                 match = False
                                 break
@@ -485,10 +578,14 @@ class PatchCoder(Coder):
                     raise DiffError(f"Could not find scope context:\n{scope_txt}")
 
             # Peek and parse the next context/change section
-            context_block, chunks_in_section, next_index, is_eof = peek_next_section(lines, index)
+            context_block, chunks_in_section, next_index, is_eof = peek_next_section(
+                lines, index
+            )
 
             # Find where this context block appears in the original file
-            found_index, fuzz = find_context(orig_lines, context_block, current_file_index, is_eof)
+            found_index, fuzz = find_context(
+                orig_lines, context_block, current_file_index, is_eof
+            )
             total_fuzz += fuzz
 
             if found_index == -1:
@@ -513,7 +610,9 @@ class PatchCoder(Coder):
 
         return action, index, total_fuzz
 
-    def _parse_add_file_content(self, lines: List[str], index: int) -> Tuple[PatchAction, int]:
+    def _parse_add_file_content(
+        self, lines: List[str], index: int
+    ) -> Tuple[PatchAction, int]:
         """Parses the content (+) lines for an Add File action."""
         added_lines: List[str] = []
         while index < len(lines):
@@ -543,7 +642,9 @@ class PatchCoder(Coder):
 
             index += 1
 
-        action = PatchAction(type=ActionType.ADD, path="", new_content="\n".join(added_lines))
+        action = PatchAction(
+            type=ActionType.ADD, path="", new_content="\n".join(added_lines)
+        )
         return action, index
 
     def apply_edits(self, edits: List[PatchAction]):
@@ -566,7 +667,9 @@ class PatchCoder(Coder):
                 if action.type == ActionType.ADD:
                     # Check existence *before* writing
                     if path_obj.exists():
-                        raise DiffError(f"ADD Error: File already exists: {action.path}")
+                        raise DiffError(
+                            f"ADD Error: File already exists: {action.path}"
+                        )
                     if action.new_content is None:
                         # Parser should ensure this doesn't happen
                         raise DiffError(f"ADD change for {action.path} has no content")
@@ -590,18 +693,26 @@ class PatchCoder(Coder):
 
                 elif action.type == ActionType.UPDATE:
                     if not path_obj.exists():
-                        raise DiffError(f"UPDATE Error: File does not exist: {action.path}")
+                        raise DiffError(
+                            f"UPDATE Error: File does not exist: {action.path}"
+                        )
 
                     current_content = self.io.read_text(full_path)
                     if current_content is None:
                         # Should have been caught during parsing if file was needed
-                        raise DiffError(f"Could not read file for UPDATE: {action.path}")
+                        raise DiffError(
+                            f"Could not read file for UPDATE: {action.path}"
+                        )
 
                     # Apply the update logic using the parsed chunks
-                    new_content = self._apply_update(current_content, action, action.path)
+                    new_content = self._apply_update(
+                        current_content, action, action.path
+                    )
 
                     target_full_path = (
-                        self.abs_root_path(action.move_path) if action.move_path else full_path
+                        self.abs_root_path(action.move_path)
+                        if action.move_path
+                        else full_path
                     )
                     target_path_obj = pathlib.Path(target_full_path)
 
@@ -631,8 +742,36 @@ class PatchCoder(Coder):
                     raise DiffError(f"Unknown action type encountered: {action.type}")
 
             except (DiffError, FileNotFoundError, IOError, OSError) as e:
+                # Attempt to apply the patch using an external apply model if configured
+                if (
+                    self.main_model.editor_model
+                    and "osmosis-apply" in self.main_model.editor_model.name
+                ):
+                    try:
+                        patch_text = self._format_patch_action(action)
+                        updated = self._llm_apply_patch(
+                            action.path, patch_text, current_content
+                        )
+                        if updated is not None:
+                            target_full_path = (
+                                self.abs_root_path(action.move_path)
+                                if action.move_path
+                                else full_path
+                            )
+                            pathlib.Path(target_full_path).parent.mkdir(
+                                parents=True, exist_ok=True
+                            )
+                            self.io.write_text(target_full_path, updated)
+                            if action.move_path and full_path != target_full_path:
+                                path_obj.unlink()
+                            continue
+                    except Exception as llm_err:
+                        self.io.tool_warning(f"Apply model failed: {llm_err}")
+
                 # Raise a ValueError to signal failure, consistent with other coders.
-                raise ValueError(f"Error applying action '{action.type}' to {action.path}: {e}")
+                raise ValueError(
+                    f"Error applying action '{action.type}' to {action.path}: {e}"
+                )
             except Exception as e:
                 # Catch unexpected errors during application
                 raise ValueError(
@@ -673,7 +812,9 @@ class PatchCoder(Coder):
             # Verify that the lines to be deleted actually match the original file content
             # (The parser should have used find_context, but double-check here)
             num_del = len(chunk.del_lines)
-            actual_deleted_lines = orig_lines[chunk_start_index : chunk_start_index + num_del]
+            actual_deleted_lines = orig_lines[
+                chunk_start_index : chunk_start_index + num_del
+            ]
 
             # Use the same normalization as find_context_core for comparison robustness
             norm_chunk_del = [_norm(s).strip() for s in chunk.del_lines]
@@ -701,6 +842,8 @@ class PatchCoder(Coder):
 
         # Join lines and ensure a single trailing newline
         result = "\n".join(dest_lines)
-        if result or orig_lines:  # Add newline unless result is empty and original was empty
+        if (
+            result or orig_lines
+        ):  # Add newline unless result is empty and original was empty
             result += "\n"
         return result
