@@ -280,6 +280,12 @@ cog.outl("```")
 ## Specify a custom prompt for generating commit messages
 #AIDER_COMMIT_PROMPT=
 
+## Specify a tag for the local code apply model osmosis/osmosis-apply-1.7B
+#AIDER_APPLY_MODEL_TAG=
+
+## Custom system prompt for the code apply model
+#AIDER_APPLY_PROMPT=
+
 ## Perform a dry run without modifying files (default: False)
 #AIDER_DRY_RUN=false
 
